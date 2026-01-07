@@ -49,13 +49,15 @@ def start_gst():
     if gst_process and gst_process.poll() is None:
         return # Already running
     
-    print(":: [Recv] Starting GStreamer...")
+    print(":: [Recv] Starting GStreamer (Balanced Mode)...")
+    # Tuned for Balance: Latency (100ms) + Buffer (100ms)
+    # This prevents stutters without excessive delay
     cmd = [
         "gst-launch-1.0", "-q", "udpsrc", f"port={GST_PORT}", "!",
         "application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96", "!",
         "rtpjitterbuffer", "latency=100", "!",
         "rtpopusdepay", "!", "opusdec", "!",
-        "openslessink", "buffer-time=80000", "latency-time=20000"
+        "openslessink", "buffer-time=100000", "latency-time=20000"
     ]
     gst_process = subprocess.Popen(cmd)
 
@@ -122,12 +124,7 @@ while running:
         print(f":: [Error] Loop error: {e}")
 
     # C. HEALTH CHECK
-    # If GStreamer died, restart it (if we have an IP)
     if pc_ip and (not gst_process or gst_process.poll() is not None):
-        # Only auto-restart if we recently got an ACK? 
-        # For now, simplistic approach: if we have IP, we want stream.
-        # But maybe wait for ACK to confirm server is actually alive?
-        # Let's rely on ACK to trigger start, but restart if it crashes.
         pass 
 EOF
 

@@ -97,7 +97,7 @@ def run_command(cmd_list, bg=False):
         return None
 
 def setup_audio_graph():
-    # Create nodes if missing
+    # 1. Create nodes if missing
     nodes = ["zbin", "zbout", "zmic"]
     descs = ["ZeroBridge_Phone_Mic", "ZeroBridge_To_Phone", "ZeroBridge_Microphone"]
     types = ["Audio/Sink", "Audio/Sink", "Audio/Source/Virtual"]
@@ -114,15 +114,34 @@ def setup_audio_graph():
             ]
             run_command(cmd)
     
-    # Link Scrcpy/Desktop
+    # 2. Enforce Routing (Clean up bad links first)
     try:
-        # Link Phone Mic -> Virtual Mic
+        # A. Link Phone Mic (zbin) -> Virtual Mic (zmic)
         run_command(["pw-link", "zbin:monitor_FL", "zmic:input_FL"])
         run_command(["pw-link", "zbin:monitor_FR", "zmic:input_FR"])
         
-        # Link Desktop Loopback -> zbout
+        # B. Link SDL Application (Scrcpy Audio) -> zbin (Phone Input)
+        run_command(["pw-link", "SDL Application:output_FL", "zbin:playback_FL"])
+        run_command(["pw-link", "SDL Application:output_FR", "zbin:playback_FR"])
+        
+        # C. Link Desktop Loopback -> zbout (PC Output)
         run_command(["pw-link", "output.ZBridge_Desktop:output_FL", "zbout:playback_FL"])
         run_command(["pw-link", "output.ZBridge_Desktop:output_FR", "zbout:playback_FR"])
+
+        # --- D. CLEANUP / ANTI-FEEDBACK RULES ---
+        
+        # 1. Disconnect Scrcpy from zbout (Prevents Loop)
+        run_command(["pw-link", "-d", "SDL Application:output_FL", "zbout:playback_FL"])
+        run_command(["pw-link", "-d", "SDL Application:output_FR", "zbout:playback_FR"])
+        
+        # 2. Disconnect Monitor Loopback from zbout (Prevents Loop)
+        run_command(["pw-link", "-d", "output.ZBridge_Monitor:output_FL", "zbout:playback_FL"])
+        run_command(["pw-link", "-d", "output.ZBridge_Monitor:output_FR", "zbout:playback_FR"])
+
+        # 3. Disconnect Virtual Mic from Desktop Capture (Prevents Virtual Mic being broadcasted back to phone)
+        run_command(["pw-link", "-d", "zmic:capture_FL", "input.ZBridge_Desktop:input_FL"])
+        run_command(["pw-link", "-d", "zmic:capture_FR", "input.ZBridge_Desktop:input_FR"])
+        
     except:
         pass
 
@@ -138,6 +157,11 @@ def manage_loopback(name, active, source=None, sink=None):
     elif active != "on" and is_running:
         log(f"Disabling Loopback: {name}")
         run_command(["pkill", "-f", f"pw-loopback.*--name {name}"])
+
+def handle_reload(signum, frame):
+    log(":: [Daemon] Reload signal received (SIGUSR1). Re-enforcing graph... ::")
+    # Immediate graph cleanup when config changes
+    setup_audio_graph()
 
 # --- Threads ---
 
@@ -166,9 +190,7 @@ def network_listener():
                         with open(READY_FLAG, 'w') as f: f.write("1")
                     
                     # ALWAYS ACK (Silent Heartbeat)
-                    # We send to the detected IP from the packet, updating our target if it changed
                     if phone_ip.split(':')[0] != addr[0]:
-                        # log(f"Phone IP changed detected: {addr[0]}")
                         pass 
                         
                     # Send ACK back
@@ -242,10 +264,11 @@ def connection_manager():
                 zbout_id = get_node_id("zbout")
                 if zbout_id:
                     log(f"Starting Stream -> {target_ip_clean}:5000")
+                    # BALANCED: frame-size=10 (10ms) - less overhead than 5ms, less latency than 20ms
                     cmd = [
                         "gst-launch-1.0", "-q", "pipewiresrc", f"path={zbout_id}", "!",
                         "audioconvert", "!",
-                        "opusenc", "bitrate=96000", "audio-type=voice", "frame-size=5", "!",
+                        "opusenc", "bitrate=96000", "audio-type=voice", "frame-size=10", "!",
                         "rtpopuspay", "!",
                         "udpsink", f"host={target_ip_clean}", "port=5000", "sync=false", "async=false"
                     ]
@@ -294,6 +317,8 @@ def cleanup_handler(signum, frame):
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, cleanup_handler)
     signal.signal(signal.SIGTERM, cleanup_handler)
+    # Register SIGUSR1 for zb-config reloads
+    signal.signal(signal.SIGUSR1, handle_reload)
     
     if not os.path.exists(CONFIG_DIR): os.makedirs(CONFIG_DIR)
     

@@ -3,6 +3,6 @@
   "description": "Quick Settings toggle for ZeroBridge (Android-Linux Audio/Video Bridge)",
   "uuid": "zbridge@zerobridge.local",
   "shell-version": [ "45", "46", "47", "48", "49" ],
-  "url": "https://github.com/yourname/zbridge",
+  "url": "https://github.com/doromiert/zbridge",
   "version": 1
 }

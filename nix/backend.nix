@@ -40,7 +40,7 @@ stdenv.mkDerivation {
     cp zb-config.sh $out/bin/zb-config
 
     # Install Python Daemon as 'zb-daemon'
-    cp zb_daemon.py $out/bin/zb-daemon
+    cp zb-daemon.py $out/bin/zb-daemon
 
     cp zb-installer.sh $out/bin/zb-installer
     cp zb-debug-phone.sh $out/bin/zb-debug-phone
