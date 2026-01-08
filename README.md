@@ -1,4 +1,3 @@
-
 # ZeroBridge (zb)
 
 **ZeroBridge** is a bidirectional Android-Linux audio/video bridge. It turns your Android device into a high-quality wireless microphone, camera, and secondary display for your Linux desktop, using `pipewire`, `scrcpy`, and `gstreamer`.
@@ -15,7 +14,7 @@ It features a robust **Python-based daemon** with self-healing audio routing, pe
   - **Auto-Discovery:** PC scans for the phone; Phone caches the PC's IP.
   - **Dual Advertising:** Both sides aggressively advertise their presence when disconnected.
   - **Self-Healing:** Automatically repairs Broken PipeWire links or crashed GStreamer streams.
-- **NixOS / Home Manager Native:** Deploys easily via Flakes.
+- **Universal Compatibility:** Support for NixOS (Flakes/Home Manager) and Arch Linux (AUR).
 
 ---
 
@@ -27,61 +26,37 @@ ZeroBridge consists of three main components:
 2.  **Receiver (Phone):** A Python script running in **Termux** that receives the audio stream, sends the microphone audio (via Scrcpy's backchannel), and maintains a heartbeat with the PC.
 3.  **GNOME Extension:** A UI for toggling features and updating the target phone IP.
 
-### The Handshake Protocol (UDP 5001/5002)
-
-1.  **Disconnected:**
-    - **PC:** Broadcasts `SYNC:<PC_IP>` to the last known Phone IP every second.
-    - **Phone:** Broadcasts `READY` to the cached PC IP every second.
-2.  **Connection:**
-    - When either side receives the other's packet, they update their target IP.
-    - The PC sends an `ACK` packet.
-3.  **Connected:**
-    - The Phone stops broadcasting and switches to a 10s Heartbeat.
-    - The PC starts the GStreamer audio stream and Scrcpy video session.
-
 ---
 
 ## Installation
 
-### Prerequisites
+### A. Arch Linux (AUR)
 
-- **Linux Desktop:** PipeWire, WirePlumber, Wayland/X11.
-- **Android Device:** Developer Options > USB Debugging enabled.
-- **Nix:** Flakes enabled.
+If you are on Arch (or a derivative like CachyOS), you can install the core tools via the AUR:
 
-### 1. Add to `flake.nix`
-
-Add ZeroBridge to your system flake inputs:
-
-```nix
-inputs = {
-  nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-
-  # Add ZeroBridge Input
-  zbridge.url = "github:doromiert/zerobridge";
-  zbridge.inputs.nixpkgs.follows = "nixpkgs";
-};
+```bash
+yay -S zbridge
 ```
 
-### 2. Configure Home Manager
+_Note: The GNOME Extension is packaged separately as `gnome-shell-extension-zbridge`._
 
-Import the module in your Home Manager configuration:
+### B. NixOS / Home Manager
+
+1. **Add to `flake.nix` inputs:**
 
 ```nix
-{ inputs, pkgs, ... }:
-{
-  imports = [
-    inputs.zbridge.homeManagerModules.default
-  ];
+inputs.zbridge.url = "github:doromiert/zbridge";
+```
 
-  services.zbridge = {
-    enable = true;
-    installExtension = true; # Auto-installs GNOME Shell extension
-  };
+2. **Configure Home Manager:**
+
+```nix
+{ inputs, ... }: {
+  imports = [ inputs.zbridge.homeManagerModules.default ];
+  services.zbridge.enable = true;
+  services.zbridge.installExtension = true;
 }
 ```
-
-Apply your configuration (`home-manager switch` or `nixos-rebuild switch`).
 
 ---
 
@@ -89,65 +64,55 @@ Apply your configuration (`home-manager switch` or `nixos-rebuild switch`).
 
 ### Step 1: Initial Pairing (USB)
 
-1.  Connect your Android phone to your PC via USB.
-2.  Ensure **USB Debugging** is active.
-3.  Run the installer to deploy the Python receiver to Termux:
+1.  Connect your Android phone via USB.
+2.  Ensure **USB Debugging** is active in Developer Options.
+3.  Deploy the Python receiver to Termux:
 
     ```bash
     zb-installer <PHONE_IP>
-    # Example: zb-installer 192.168.1.45
     ```
-
-    _This will install Python/GStreamer in Termux, set up the scripts, and start the service._
 
 ### Step 2: Configuration (Wireless)
 
-You can now disconnect the USB cable. Use the GNOME extension or the CLI to control the bridge.
-
-**CLI Control:**
+Once installed, you can disconnect the USB cable. Use the GNOME extension or the CLI:
 
 ```bash
-# Update Target Phone IP
-zb-config set PHONE_IP "192.168.1.45"
+# Set Phone IP
+zb-config -i 192.168.1.45
 
 # Toggle Features
-zb-config set MONITOR "on"      # Listen to phone mic on PC
-zb-config set DESKTOP "on"      # Stream PC audio to Phone
-zb-config set CAM_FACING "back" # Use back camera
+zb-config -m on      # Use Phone as Mic (Monitor)
+zb-config -d on      # Stream PC Audio to Phone (Desktop)
+zb-config -c front   # Use Front Camera
+zb-config -o flip90  # Set Camera Orientation
+
+# Manage Daemon
+zb-config -t         # Toggle Daemon (Start/Stop)
+zb-config -k         # Kill all streams and stop service
 ```
 
 ### Step 3: Verify Audio
 
-Open your OS Sound Settings (e.g., `pavucontrol`):
+Open `pavucontrol` or GNOME Sound Settings:
 
-- **Input Devices:** You should see **"ZeroBridge_Microphone"**. Select this as your default input.
-- **Output Devices:** If `DESKTOP="on"`, change your output device to **"ZeroBridge_To_Phone"** to hear PC audio on your phone.
+- **Input:** Select **"ZeroBridge_Microphone"**.
+- **Output:** Select **"ZeroBridge_To_Phone"** to hear PC audio on your device.
 
 ---
 
 ## Troubleshooting
 
-**1. Audio Loops / Feedback**
-
-- The daemon includes anti-feedback rules. If you hear an echo, ensure `zb-daemon` is running (`systemctl --user status zbridge`).
-- Trigger a graph reload: `zb-config reload`.
-
-**2. Phone Not Connecting**
-
-- Check Firewall: Ensure UDP ports **5000-5002** are open on your PC.
-- Check Phone IP: Run `zb-config set PHONE_IP <NEW_IP>`.
-- Debug Mode: Run `zb-debug-phone <IP>` to see the phone's logs in real-time.
-
-**3. Resetting State**
-
-- Restart the service:
-  ```bash
-  systemctl --user restart zbridge
-  ```
+1. **Audio Loops / Feedback:** The daemon includes anti-feedback rules. Ensure `zb-daemon` is active: `systemctl --user status zbridge`.
+2. **Phone Not Connecting:** - Ensure UDP ports **5000-5002** are open in your firewall.
+   - Run `zb-debug-phone <IP>` to see remote logs.
+3. **GNOME Extension:** Ensure you have installed `v4l2loopback-dkms` if you plan to use the camera as a virtual webcam.
 
 ---
 
 ## License
 
-MIT License
-\*/
+MIT
+
+```
+
+```
