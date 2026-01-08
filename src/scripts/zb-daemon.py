@@ -245,6 +245,7 @@ def connection_manager():
         monitor = cfg.get("MONITOR", "off")
         desktop = cfg.get("DESKTOP", "off")
         cam_facing = cfg.get("CAM_FACING", "back")
+        cam_orient = cfg.get("CAM_ORIENT", "flip90" if CAM_FACING == "front" else "flip270")
         
         # Detect IP Change
         if new_ip != phone_ip:
@@ -334,8 +335,7 @@ def connection_manager():
                     cmd += ["--no-video"]
                 else:
                     safe_cam = cam_facing if cam_facing in ["front", "back"] else "back"
-                    orient = "flip90" if safe_cam == "front" else "flip270"
-                    cmd += ["--video-source=camera", f"--camera-facing={safe_cam}", f"--capture-orientation={orient}"]
+                    cmd += ["--video-source=camera", f"--camera-facing={safe_cam}", f"--capture-orientation={cam_orient}"]
                     if os.path.exists("/dev/video9"):
                         cmd += ["--v4l2-sink=/dev/video9"]
                 
