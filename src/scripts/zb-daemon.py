@@ -13,12 +13,14 @@ import sys
 import json
 import threading
 import logging
+import argparse
 from logging.handlers import SysLogHandler
 
 # --- Configuration ---
 CONFIG_DIR = os.path.expanduser("~/.config/zbridge")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "state.conf")
 READY_FLAG = "/tmp/zbridge_ready"
+CONFIG_PID_FILE = "/tmp/zbridge_config_pid"
 LOG_TAG = "zbridge-daemon"
 
 UDP_PORT_LISTEN = 5001
@@ -32,6 +34,9 @@ last_heartbeat = 0
 gst_process = None
 scrcpy_process = None
 lock = threading.Lock()
+
+# Args
+args = None
 
 # Setup Logging
 logger = logging.getLogger(LOG_TAG)
@@ -95,6 +100,13 @@ def run_command(cmd_list, bg=False):
     except Exception as e:
         error(f"Command failed: {cmd_list} -> {e}")
         return None
+
+def send_notification(title, message):
+    """Sends a desktop notification using notify-send"""
+    try:
+        subprocess.Popen(["notify-send", "-u", "critical", title, message])
+    except Exception as e:
+        error(f"Failed to send notification: {e}")
 
 def setup_audio_graph():
     # 1. Create nodes if missing
@@ -162,6 +174,21 @@ def handle_reload(signum, frame):
     log(":: [Daemon] Reload signal received (SIGUSR1). Re-enforcing graph... ::")
     # Immediate graph cleanup when config changes
     setup_audio_graph()
+    
+    # ACK to zb-config if waiting
+    if os.path.exists(CONFIG_PID_FILE):
+        try:
+            with open(CONFIG_PID_FILE, 'r') as f:
+                pid = int(f.read().strip())
+            log(f"Sending confirmation (SIGUSR2) to zb-config PID: {pid}")
+            os.kill(pid, signal.SIGUSR2)
+        except Exception as e:
+            error(f"Failed to ACK zb-config: {e}")
+        finally:
+            # Clean up the PID file so we don't signal stale processes later
+            try:
+                os.remove(CONFIG_PID_FILE)
+            except: pass
 
 # --- Threads ---
 
@@ -206,6 +233,9 @@ def connection_manager():
     """Manages State, Poking, and Processes"""
     global current_state, gst_process, scrcpy_process, phone_ip, last_heartbeat
     
+    start_time = time.time()
+    startup_notified = False
+
     while running:
         # 1. Config & Graph Update
         setup_audio_graph()
@@ -244,6 +274,14 @@ def connection_manager():
 
         # Actions based on State
         if current_state == "DISCONNECTED":
+            
+            # Startup Notification Logic (-d flag)
+            if args.debug_notify and not startup_notified:
+                if time.time() - start_time > 5.0:
+                    log("Startup Timeout: No ready response in 5s. Sending Notification.")
+                    send_notification("ZeroBridge Connect", "No response from phone.\nRun 'sv restart zreceiver' on device.")
+                    startup_notified = True
+
             # ACTIVE ADVERTISING: Poke the phone
             my_ip = get_local_ip_for_target(target_ip_clean)
             if my_ip:
@@ -255,6 +293,9 @@ def connection_manager():
             time.sleep(1) # Poke every second
 
         elif current_state == "CONNECTED":
+            # Reset startup notification if we connect
+            startup_notified = True 
+            
             # Ensure ADB
             if not scrcpy_process or scrcpy_process.poll() is not None:
                 subprocess.run(["adb", "connect", phone_ip], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -315,6 +356,10 @@ def cleanup_handler(signum, frame):
     sys.exit(0)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="ZeroBridge Daemon")
+    parser.add_argument("-d", "--debug-notify", action="store_true", help="Send desktop notification if no handshake in 5s")
+    args = parser.parse_args()
+
     signal.signal(signal.SIGINT, cleanup_handler)
     signal.signal(signal.SIGTERM, cleanup_handler)
     # Register SIGUSR1 for zb-config reloads

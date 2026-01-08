@@ -24,7 +24,8 @@
   jq,
   uutils-findutils,
   libnotify,
-  python3, # Add Python3
+  python3,
+  enableNotify ? true, # New option: Defaults to true to enable daemon notifications
 }:
 
 stdenv.mkDerivation {
@@ -51,7 +52,16 @@ stdenv.mkDerivation {
   fixupPhase = ''
     # Wrapped path now includes python3
     for script in zb-config zb-daemon zb-installer zb-debug-phone; do
+      
+      # Determine extra flags
+      EXTRA_FLAGS=""
+      # Conditionally add -d to zb-daemon wrapper
+      if [ "$script" == "zb-daemon" ]; then
+        ${lib.optionalString enableNotify ''EXTRA_FLAGS="--add-flags -d"''}
+      fi
+
       wrapProgram $out/bin/$script \
+        $EXTRA_FLAGS \
         --prefix PATH : ${
           lib.makeBinPath [
             python3

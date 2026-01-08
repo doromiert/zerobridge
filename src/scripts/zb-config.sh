@@ -6,6 +6,7 @@
 
 CONFIG_DIR="$HOME/.config/zbridge"
 CONFIG_FILE="$CONFIG_DIR/state.conf"
+CONFIG_PID_FILE="/tmp/zbridge_config_pid"
 SERVICE_NAME="zbridge"
 
 mkdir -p "$CONFIG_DIR"
@@ -39,19 +40,28 @@ send_signal_and_wait() {
     fi
 
     echo -n "[*] Updating Daemon... "
+    
+    # 1. Write our PID so the daemon knows who to signal back
+    echo "$$" > "$CONFIG_PID_FILE"
+    
+    # 2. Trigger the reload in the daemon
     systemctl --user kill -s USR1 "$SERVICE_NAME"
     
-    # Block for confirmation (Up to 60s)
-    local timeout=60
+    # 3. Block for confirmation (Up to 5s - 60s was too long)
+    local timeout=50 # 5 seconds (0.1s steps)
     while [[ "$CONFIRMED" == "false" && $timeout -gt 0 ]]; do
-        sleep 1
+        sleep 0.1
         ((timeout--))
     done
+
+    # Cleanup PID file just in case daemon didn't
+    rm -f "$CONFIG_PID_FILE"
 
     if [[ "$CONFIRMED" == "true" ]]; then
         echo "Done."
     else
-        echo "Timed out waiting for Daemon response."
+        echo -e "\n[!] Timed out waiting for Daemon response."
+        echo "    (Is the daemon running? Check 'systemctl --user status zbridge')"
     fi
 }
 
@@ -81,7 +91,10 @@ show_status() {
     echo ":: ZeroBridge State ::"
     echo "   IP: $(get_config PHONE_IP)"
     echo "   Cam: $(get_config CAM_FACING)"
-    
+    if grep -qi "CAM_FACING=\"none\"" "$CONFIG_FILE"; then
+    else
+        echo "   Camera orientation: $(get_config CAM_ORIENT)"
+    fi
     # [FIX] Robust detection for nodes created by pw-loopback
     # pw-loopback creates 'input.Name' and 'output.Name'. We check for the output node.
     local mon_conf=$(get_config MONITOR)
@@ -102,10 +115,23 @@ show_status() {
 
 if [[ $# -eq 0 ]]; then show_status; exit 0; fi
 
-while getopts "i:c:m:d:tkh" opt; do
+while getopts "i:c:m:d:o:tkh" opt; do
     case $opt in
         i) set_config "PHONE_IP" "$OPTARG"; send_signal_and_wait ;;
         c) set_config "CAM_FACING" "$OPTARG"; send_signal_and_wait ;;
+        o) 
+            if grep -qi "CAM_FACING=\"none\"" "$CONFIG_FILE"; then
+                echo "[!] Camera is disabled."
+                echo "[*] You can enable the camera with zb-config -c (front/back)"
+            else
+                if [[ "$OPTARG" = @("0"|"90"|"flip90"|"180"|"flip180"|"270"|"flip270") ]]; then 
+                    set_config "CAM_ORIENT" "$OPTARG"; send_signal_and_wait
+                else 
+                    echo "[!] Invalid argument."
+                    echo "[*] Available options: 0, 90, 180, 270, flip0, flip90, flip180, flip270"
+                fi
+            fi
+        ;;
         m) toggle_setting "MONITOR" "$OPTARG" ;;
         d) toggle_setting "DESKTOP" "$OPTARG" ;;
         t)
@@ -124,6 +150,6 @@ while getopts "i:c:m:d:tkh" opt; do
             pkill -f "scrcpy"
             pkill -f "pw-loopback.*ZBridge"
             ;;
-        h) echo "Usage: zb-config [-i IP] [-c front/back/none] [-m on/off/toggle] [-d on/off/toggle] [-t] [-k]" ;;
+        h) echo "Usage: zb-config [-o 0/90/180/270/flip0/flip90/flip180/flip270 ] [-i IP] [-c front/back/none] [-m on/off/toggle] [-d on/off/toggle] [-t] [-k]" ;;
     esac
 done
