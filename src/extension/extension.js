@@ -66,8 +66,57 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
         this.menu.addMenuItem(this._turnOnItem);
 
         // --- 2. Advanced Section (Hidden when OFF) ---
-        this._advancedSection = new GObject.Object(); 
         this._advancedItems = [];
+
+        // === Camera Source Submenu ===
+        this._sourceMenu = new PopupMenu.PopupSubMenuMenuItem(_('Camera Source'), true);
+        this._sourceMenu.icon.icon_name = 'camera-video-symbolic';
+        this._sourceItems = {};
+
+        ['back', 'front', 'none'].forEach(type => {
+            let label = type.charAt(0).toUpperCase() + type.slice(1);
+            if (type === 'none') label = _('No Video (Audio Only)');
+
+            let item = new PopupMenu.PopupMenuItem(label);
+            item.connect('activate', () => this._runConfig(['-c', type]));
+            
+            this._sourceMenu.menu.addMenuItem(item);
+            this._sourceItems[type] = item;
+        });
+        this.menu.addMenuItem(this._sourceMenu);
+        this._advancedItems.push(this._sourceMenu);
+
+        // === Camera Orientation Submenu ===
+        this._orientMenu = new PopupMenu.PopupSubMenuMenuItem(_('Camera Orientation'), true);
+        this._orientMenu.icon.icon_name = 'object-rotate-right-symbolic';
+        this._orientItems = {};
+        
+        // State tracking for the split logic
+        this._currentAngle = '0'; 
+        this._isFlipped = false;
+
+        // Angle Radio Buttons
+        ['0', '90', '180', '270'].forEach(angle => {
+             let item = new PopupMenu.PopupMenuItem(angle + '°');
+             item.connect('activate', () => this._onOrientChange(angle, this._isFlipped));
+             this._orientMenu.menu.addMenuItem(item);
+             this._orientItems[angle] = item;
+        });
+
+        this._orientMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // Flip Switch
+        this._flipSwitch = new PopupMenu.PopupSwitchMenuItem(_('Mirror / Flip'), false);
+        this._flipSwitch.connect('toggled', (item) => this._onOrientChange(this._currentAngle, item.state));
+        this._orientMenu.menu.addMenuItem(this._flipSwitch);
+        
+        this.menu.addMenuItem(this._orientMenu);
+        this._advancedItems.push(this._orientMenu);
+
+        // === Audio Section ===
+        const sep1 = new PopupMenu.PopupSeparatorMenuItem();
+        this.menu.addMenuItem(sep1);
+        this._advancedItems.push(sep1);
 
         let addHeader = (text) => {
              let item = new PopupMenu.PopupMenuItem(text, { reactive: false, can_focus: false });
@@ -75,24 +124,6 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
              this.menu.addMenuItem(item);
              this._advancedItems.push(item);
         };
-
-        addHeader(_('Camera Source'));
-        this._camBackItem = new PopupMenu.PopupMenuItem(_('Back Camera'));
-        this._camBackItem.connect('activate', () => this._runConfig(['-c', 'back']));
-        this._camFrontItem = new PopupMenu.PopupMenuItem(_('Front Camera'));
-        this._camFrontItem.connect('activate', () => this._runConfig(['-c', 'front']));
-        this._camNoneItem = new PopupMenu.PopupMenuItem(_('No Video (Audio Only)'));
-        this._camNoneItem.connect('activate', () => this._runConfig(['-c', 'none']));
-
-        [this._camBackItem, this._camFrontItem, this._camNoneItem].forEach(i => {
-            this.menu.addMenuItem(i);
-            this._advancedItems.push(i);
-        });
-
-        const sep1 = new PopupMenu.PopupSeparatorMenuItem();
-        this.menu.addMenuItem(sep1);
-        this._advancedItems.push(sep1);
-
         addHeader(_('Audio Routing'));
         
         this._monitorSwitch = new PopupMenu.PopupSwitchMenuItem(_('Hear Phone on PC'), false);
@@ -126,6 +157,21 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
     async _onMainToggle() {
         if (this._isSyncing) return;
         await this._runConfig(['-t']);
+    }
+
+    async _onOrientChange(angle, flipped) {
+        if (this._isSyncing) return;
+        
+        // Update local state immediately for responsiveness
+        this._currentAngle = angle;
+        this._isFlipped = flipped;
+
+        // Construct command
+        // logic: if flipped, prepend 'flip'. e.g. 90 -> flip90, 0 -> flip0
+        let cmd = angle;
+        if (flipped) cmd = 'flip' + angle;
+
+        await this._runConfig(['-o', cmd]);
     }
 
     async _runConfig(args) {
@@ -164,12 +210,35 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
         // Visibility Logic
         this._turnOnItem.visible = !isRunning;
         this._advancedItems.forEach(item => { item.visible = isRunning; });
+        this._orientMenu.visible = (cam !== 'none');
 
         if (isRunning) {
-            this._camBackItem.setOrnament(cam === 'back' ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
-            this._camFrontItem.setOrnament(cam === 'front' ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
-            this._camNoneItem.setOrnament(cam === 'none' ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
+            // Source Radio Sync
+            ['back', 'front', 'none'].forEach(k => {
+                 this._sourceItems[k].setOrnament(cam === k ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
+            });
 
+            // Orientation Sync
+            // Parse "flip90 (Default)" -> "flip90"
+            let orientRaw = getVal('Camera orientation').split(' ')[0];
+            
+            // Derive split state
+            let isFlipped = orientRaw.startsWith('flip');
+            let angle = orientRaw.replace('flip', '');
+            
+            // Safety check for unknown angles
+            if (!['0','90','180','270'].includes(angle)) angle = '0';
+
+            this._currentAngle = angle;
+            this._isFlipped = isFlipped;
+
+            // Update UI
+            Object.keys(this._orientItems).forEach(k => {
+                this._orientItems[k].setOrnament(k === angle ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
+            });
+            this._flipSwitch.setToggleState(isFlipped);
+
+            // Audio Sync
             this._monitorSwitch.setToggleState(monitor.includes('[ACTIVE]') || monitor.includes('[on]'));
             this._desktopSwitch.setToggleState(desktop.includes('[ACTIVE]') || desktop.includes('[on]'));
         }

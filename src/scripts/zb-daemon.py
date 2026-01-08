@@ -245,7 +245,10 @@ def connection_manager():
         monitor = cfg.get("MONITOR", "off")
         desktop = cfg.get("DESKTOP", "off")
         cam_facing = cfg.get("CAM_FACING", "back")
-        cam_orient = cfg.get("CAM_ORIENT", "flip90" if cam_facing == "front" else "flip270")
+        # [MODIFIED] Read explicit orientation OR defaults
+        cam_orient_explicit = cfg.get("CAM_ORIENT", "")
+        def_orient_front = cfg.get("DEF_ORIENT_FRONT", "flip90")
+        def_orient_back = cfg.get("DEF_ORIENT_BACK", "flip270")
         
         # Detect IP Change
         if new_ip != phone_ip:
@@ -335,7 +338,14 @@ def connection_manager():
                     cmd += ["--no-video"]
                 else:
                     safe_cam = cam_facing if cam_facing in ["front", "back"] else "back"
-                    cmd += ["--video-source=camera", f"--camera-facing={safe_cam}", f"--capture-orientation={cam_orient}"]
+                    
+                    # [MODIFIED] Determine Final Orientation
+                    if cam_orient_explicit:
+                        final_orient = cam_orient_explicit
+                    else:
+                        final_orient = def_orient_front if safe_cam == "front" else def_orient_back
+                        
+                    cmd += ["--video-source=camera", f"--camera-facing={safe_cam}", f"--capture-orientation={final_orient}"]
                     if os.path.exists("/dev/video9"):
                         cmd += ["--v4l2-sink=/dev/video9"]
                 

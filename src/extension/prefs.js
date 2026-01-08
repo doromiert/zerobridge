@@ -39,7 +39,45 @@ export default class ZBridgePrefs extends ExtensionPreferences {
         ipRow.add_suffix(saveBtn);
         groupConnect.add(ipRow);
 
-        // --- Group 2: Wireless Pairing ---
+        // --- Group 2: Camera Defaults ---
+        const groupCam = new Adw.PreferencesGroup({
+            title: _('Camera Defaults'),
+            description: _('Set the default orientation for each camera lens.')
+        });
+
+        const orientations = ['0', '90', '180', '270', 'flip0', 'flip90', 'flip180', 'flip270'];
+        const orientList = new Gtk.StringList({ strings: orientations });
+
+        // Front Camera Default
+        const frontRow = new Adw.ComboRow({
+            title: _('Default Front Orientation'),
+            model: orientList,
+        });
+        // Default index 5 corresponds to 'flip90'
+        frontRow.set_selected(5); 
+
+        frontRow.connect('notify::selected', () => {
+             const selected = orientations[frontRow.get_selected()];
+             this._runSilentCommand(['zb-config', '-F', selected]);
+        });
+        groupCam.add(frontRow);
+
+        // Back Camera Default
+        const backRow = new Adw.ComboRow({
+            title: _('Default Back Orientation'),
+            model: orientList,
+        });
+        // Default index 7 corresponds to 'flip270'
+        backRow.set_selected(7);
+
+        backRow.connect('notify::selected', () => {
+             const selected = orientations[backRow.get_selected()];
+             this._runSilentCommand(['zb-config', '-B', selected]);
+        });
+        groupCam.add(backRow);
+
+
+        // --- Group 3: Wireless Pairing ---
         const groupPair = new Adw.PreferencesGroup({
             title: _('Wireless Pairing'),
             description: _('Requires "Wireless Debugging" enabled in Android Developer Options.')
@@ -48,12 +86,9 @@ export default class ZBridgePrefs extends ExtensionPreferences {
         // Pairing Address
         const pairIpRow = new Adw.EntryRow({
             title: _('Pairing Address'),
-            text: '192.168.1.x:yyyy', // Placeholder-like behavior (value is text though)
+            text: '', 
             input_purpose: Gtk.InputPurpose.FREE_FORM
         });
-        // Clear default text on focus if it matches placeholder logic (manual in EntryRow)
-        // Or just leave empty to show the title clearly. Let's leave empty.
-        pairIpRow.set_text(''); 
 
         // Pairing Code
         const codeRow = new Adw.EntryRow({
@@ -81,6 +116,7 @@ export default class ZBridgePrefs extends ExtensionPreferences {
         groupPair.add(codeRow);
 
         page.add(groupConnect);
+        page.add(groupCam);
         page.add(groupPair);
         window.add(page);
     }
@@ -117,6 +153,13 @@ export default class ZBridgePrefs extends ExtensionPreferences {
             button.set_label(_('Error'));
             button.set_sensitive(true);
         }
+    }
+
+    _runSilentCommand(argv) {
+        try {
+            const proc = new Gio.Subprocess({ argv: argv, flags: Gio.SubprocessFlags.NONE });
+            proc.init(null);
+        } catch (e) { console.error(e); }
     }
 
     _runPair(addr, code, btn) {
