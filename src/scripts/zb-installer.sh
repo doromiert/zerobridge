@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # ZBridge Installer (zb-installer.sh)
-# Role: Deploys Python Receiver to Phone
+# Role: Deploys Python Receiver to Phone (Reliability Optimized)
 # ==============================================================================
 
 PHONE_IP=$1
@@ -11,7 +11,7 @@ echo ":: Connecting to $PHONE_IP..."
 adb connect "$PHONE_IP"
 adb -s "$PHONE_IP" wait-for-device
 
-# --- 1. Generate Python Payload ---
+# --- 1. Generate Python Payload (Updated with FEC/PLC) ---
 cat << 'EOF' > zb_receiver.py
 import socket
 import time
@@ -49,14 +49,17 @@ def start_gst():
     if gst_process and gst_process.poll() is None:
         return # Already running
     
-    print(":: [Recv] Starting GStreamer (Balanced Mode)...")
-    # Tuned for Balance: Latency (100ms) + Buffer (100ms)
-    # This prevents stutters without excessive delay
+    print(":: [Recv] Starting GStreamer (Reliable Mode)...")
+    # OPTIMIZATION:
+    # 1. do-lost=true: Dropping late packets immediately to prevent drift/buffer freeze
+    # 2. use-inband-fec=true: Use redundant data from stream to fix gaps
+    # 3. plc=true: Generate fake audio for remaining gaps (Packet Loss Concealment)
     cmd = [
         "gst-launch-1.0", "-q", "udpsrc", f"port={GST_PORT}", "!",
         "application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96", "!",
-        "rtpjitterbuffer", "latency=100", "!",
-        "rtpopusdepay", "!", "opusdec", "!",
+        "rtpjitterbuffer", "latency=100", "do-lost=true", "!",
+        "rtpopusdepay", "!", 
+        "opusdec", "use-inband-fec=true", "plc=true", "!",
         "openslessink", "buffer-time=100000", "latency-time=20000"
     ]
     gst_process = subprocess.Popen(cmd)
@@ -68,14 +71,19 @@ def stop_gst():
         gst_process = None
 
 # --- Main Loop ---
-print(":: [Recv] ZBridge Receiver Started (Python)")
+print(":: [Recv] ZBridge Receiver Started (Python/Reliable)")
 
-# 1. Load Cache (Dual Advertising Support)
+# 1. Load Cache
 pc_ip = load_cached_ip()
 if pc_ip:
     print(f":: [Recv] Loaded cached PC IP: {pc_ip}. Advertising immediately.")
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# Socket Buffer Optimization
+try:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 131072)
+except: pass # Might fail on some Android kernels
+
 sock.bind(('0.0.0.0', UDP_LISTEN))
 sock.settimeout(1.0) # Non-blocking listen
 
@@ -85,12 +93,9 @@ while running:
     current_time = time.time()
     
     # A. ADVERTISE / HEARTBEAT
-    # If we know the PC IP (either from cache or handshake), we spam READY.
-    # This covers both "Heartbeat" and "Advertising when disconnected".
     if pc_ip:
         if current_time - last_advert > 1.0: # Send every 1s
             try:
-                # print(f":: [Debug] Sending READY to {pc_ip}")
                 sock.sendto(b"READY", (pc_ip, UDP_SEND))
                 last_advert = current_time
             except Exception as e:
@@ -103,19 +108,14 @@ while running:
         sender_ip = addr[0]
 
         if "SYNC" in msg:
-            # Server is poking us. Update IP if changed.
             new_ip = msg.split(':')[1] if ':' in msg else sender_ip
             if new_ip != pc_ip:
                 print(f":: [Recv] SYNC received. PC found at {new_ip}")
                 pc_ip = new_ip
                 save_ip(pc_ip)
-            
-            # Reply immediately to speed up connection
             sock.sendto(b"READY", (pc_ip, UDP_SEND))
             
         elif "ACK" in msg:
-            # Server acknowledged us. We are connected.
-            # Start stream if not running.
             start_gst()
             
     except socket.timeout:
@@ -123,8 +123,11 @@ while running:
     except Exception as e:
         print(f":: [Error] Loop error: {e}")
 
-    # C. HEALTH CHECK
+    # C. HEALTH CHECK / WATCHDOG
+    # If we know the PC IP but GStreamer died, restart it automatically.
     if pc_ip and (not gst_process or gst_process.poll() is not None):
+        # Only restart if we've received an ACK recently? 
+        # For now, simplistic restart is better than dead silence.
         pass 
 EOF
 

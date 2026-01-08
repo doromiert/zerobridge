@@ -2,6 +2,7 @@
 # ==============================================================================
 # ZBridge Daemon (Python Rewrite)
 # Role: Robust State Machine, Audio Graph Manager & Handshake Host
+# Updated: Added Opus FEC, Socket Buffers, and Process Hardening
 # ==============================================================================
 
 import socket
@@ -197,6 +198,8 @@ def network_listener():
     global current_state, last_heartbeat, phone_ip
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # OPTIMIZATION: Increase Receive Buffer to 256KB to prevent kernel drops
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
     sock.bind(('0.0.0.0', UDP_PORT_LISTEN))
     sock.settimeout(1.0)
     
@@ -216,10 +219,6 @@ def network_listener():
                         # Create flag for other scripts
                         with open(READY_FLAG, 'w') as f: f.write("1")
                     
-                    # ALWAYS ACK (Silent Heartbeat)
-                    if phone_ip.split(':')[0] != addr[0]:
-                        pass 
-                        
                     # Send ACK back
                     ack_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                     ack_sock.sendto(b"ACK", (addr[0], UDP_PORT_SEND))
@@ -245,7 +244,6 @@ def connection_manager():
         monitor = cfg.get("MONITOR", "off")
         desktop = cfg.get("DESKTOP", "off")
         cam_facing = cfg.get("CAM_FACING", "back")
-        # [MODIFIED] Read explicit orientation OR defaults
         cam_orient_explicit = cfg.get("CAM_ORIENT", "")
         def_orient_front = cfg.get("DEF_ORIENT_FRONT", "flip90")
         def_orient_back = cfg.get("DEF_ORIENT_BACK", "flip270")
@@ -278,7 +276,6 @@ def connection_manager():
 
         # Actions based on State
         if current_state == "DISCONNECTED":
-            
             # Startup Notification Logic (-d flag)
             if args.debug_notify and not startup_notified:
                 if time.time() - start_time > 5.0:
@@ -297,7 +294,6 @@ def connection_manager():
             time.sleep(1) # Poke every second
 
         elif current_state == "CONNECTED":
-            # Reset startup notification if we connect
             startup_notified = True 
             
             # Ensure ADB
@@ -309,11 +305,14 @@ def connection_manager():
                 zbout_id = get_node_id("zbout")
                 if zbout_id:
                     log(f"Starting Stream -> {target_ip_clean}:5000")
-                    # BALANCED: frame-size=10 (10ms) - less overhead than 5ms, less latency than 20ms
+                    # OPTIMIZATION: FEC Enabled
+                    # - inband-fec=true: Sends redundant data to repair lost packets (0ms latency cost)
+                    # - packet-loss-percentage=10: Tells encoder to budget for ~10% loss
                     cmd = [
                         "gst-launch-1.0", "-q", "pipewiresrc", f"path={zbout_id}", "!",
                         "audioconvert", "!",
-                        "opusenc", "bitrate=96000", "audio-type=voice", "frame-size=10", "!",
+                        "opusenc", "bitrate=96000", "audio-type=voice", "frame-size=10",
+                        "inband-fec=true", "packet-loss-percentage=10", "!",
                         "rtpopuspay", "!",
                         "udpsink", f"host={target_ip_clean}", "port=5000", "sync=false", "async=false"
                     ]
@@ -338,8 +337,6 @@ def connection_manager():
                     cmd += ["--no-video"]
                 else:
                     safe_cam = cam_facing if cam_facing in ["front", "back"] else "back"
-                    
-                    # [MODIFIED] Determine Final Orientation
                     if cam_orient_explicit:
                         final_orient = cam_orient_explicit
                     else:
@@ -372,7 +369,6 @@ if __name__ == "__main__":
 
     signal.signal(signal.SIGINT, cleanup_handler)
     signal.signal(signal.SIGTERM, cleanup_handler)
-    # Register SIGUSR1 for zb-config reloads
     signal.signal(signal.SIGUSR1, handle_reload)
     
     if not os.path.exists(CONFIG_DIR): os.makedirs(CONFIG_DIR)
