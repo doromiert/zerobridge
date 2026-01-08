@@ -245,7 +245,7 @@ def connection_manager():
         monitor = cfg.get("MONITOR", "off")
         desktop = cfg.get("DESKTOP", "off")
         cam_facing = cfg.get("CAM_FACING", "back")
-        cam_orient = cfg.get("CAM_ORIENT", "flip90" if CAM_FACING == "front" else "flip270")
+        cam_orient = cfg.get("CAM_ORIENT", "flip90" if cam_facing == "front" else "flip270")
         
         # Detect IP Change
         if new_ip != phone_ip:
