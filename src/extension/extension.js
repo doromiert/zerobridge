@@ -126,7 +126,7 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
         };
         addHeader(_('Audio Routing'));
         
-        this._monitorSwitch = new PopupMenu.PopupSwitchMenuItem(_('Hear Phone on PC'), false);
+        this._monitorSwitch = new PopupMenu.PopupSwitchMenuItem(_('Use Phone as Mic'), false);
         this._monitorSwitch.connect('toggled', (item) => { 
             if(!this._isSyncing) this._runConfig(['-m', item.state ? 'on' : 'off']); 
         });
