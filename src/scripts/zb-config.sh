@@ -18,6 +18,24 @@ trap 'CONFIRMED=true' SIGUSR2
 
 # --- Helpers ---
 
+is_valid_ip() {
+    local ip=$1
+    local stat=1
+
+    # Check for basic IPv4 format (x.x.x.x)
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        OIFS=$IFS
+        IFS='.'
+        ip=($ip)
+        IFS=$OIFS
+        # Ensure each octet is 0-255
+        [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 && \
+           ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
+        stat=$?
+    fi
+    return $stat
+}
+
 get_config() {
     local key="$1"
     grep "^$key=" "$CONFIG_FILE" | cut -d'=' -f2 | tr -d '"'
@@ -91,8 +109,7 @@ show_status() {
     echo ":: ZeroBridge State ::"
     echo "   IP: $(get_config PHONE_IP)"
     echo "   Cam: $(get_config CAM_FACING)"
-    if grep -qi "CAM_FACING=\"none\"" "$CONFIG_FILE"; then
-    else
+    if ! grep -qi "CAM_FACING=\"none\"" "$CONFIG_FILE"; then
         echo "   Camera orientation: $(get_config CAM_ORIENT)"
     fi
     # [FIX] Robust detection for nodes created by pw-loopback
@@ -117,7 +134,15 @@ if [[ $# -eq 0 ]]; then show_status; exit 0; fi
 
 while getopts "i:c:m:d:o:tkh" opt; do
     case $opt in
-        i) set_config "PHONE_IP" "$OPTARG"; send_signal_and_wait ;;
+        i) 
+            if is_valid_ip "$OPTARG"; then
+                set_config "PHONE_IP" "$OPTARG"
+                send_signal_and_wait
+            else
+                echo "[!] Error: '$OPTARG' is not a valid IPv4 address."
+                exit 1
+            fi
+            ;;
         c) set_config "CAM_FACING" "$OPTARG"; send_signal_and_wait ;;
         o) 
             if grep -qi "CAM_FACING=\"none\"" "$CONFIG_FILE"; then
