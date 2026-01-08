@@ -1,9 +1,3 @@
-/\*\*
-
-- =========================================================================================
-- ZeroBridge - README
-- (Embedded in C for portable copy-pasting; copy the content between the markers below)
-- =========================================================================================
 
 # ZeroBridge (zb)
 
