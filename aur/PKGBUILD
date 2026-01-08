@@ -1,0 +1,57 @@
+# Maintainer: doromiert <doromiert@gmail.com>
+pkgname=zerobridge
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Android-Linux Audio/Video Bridge (Daemon & CLI)"
+arch=('any')
+url="https://github.com/doromiert/zerobridge"
+license=('MIT')
+depends=(
+    'python'
+    'bash'
+    'android-tools'
+    'scrcpy'
+    'pipewire'
+    'gstreamer'
+    'gst-plugins-base'
+    'gst-plugins-good'
+    'gst-plugins-bad'
+    'gst-plugins-ugly'
+    'libnotify'
+    'jq'
+    'procps-ng' # Required for pkill/pgrep used in zb-config
+)
+optdepends=(
+    'gnome-shell-extension-zbridge: The GUI control extension'
+)
+# We use the git repo as source since you provided a flake structure
+source=("git+https://github.com/doromiert/zbridge.git"
+        "zbridge.service")
+sha256sums=('SKIP'
+            'SKIP')
+
+package() {
+    # 1. Enter source directory (relative to the flake structure you provided)
+    cd "$srcdir/zbridge/src/scripts"
+
+    # 2. Install Executables to /usr/bin
+    install -dm755 "$pkgdir/usr/bin"
+    
+    # Rename scripts to their binary names (zb-config.sh -> zb-config)
+    install -m755 zb-config.sh "$pkgdir/usr/bin/zb-config"
+    install -m755 zb-daemon.py "$pkgdir/usr/bin/zb-daemon"
+    install -m755 zb-installer.sh "$pkgdir/usr/bin/zb-installer"
+    install -m755 zb-debug-phone.sh "$pkgdir/usr/bin/zb-debug-phone"
+
+    # 3. Install Systemd User Service
+    # Arch places user services in /usr/lib/systemd/user
+    cd "$srcdir"
+    install -dm755 "$pkgdir/usr/lib/systemd/user"
+    install -m644 zbridge.service "$pkgdir/usr/lib/systemd/user/zbridge.service"
+
+    # 4. Install License (if present in repo root)
+    if [ -f "$srcdir/zbridge/LICENSE" ]; then
+        install -dm755 "$pkgdir/usr/share/licenses/$pkgname"
+        install -m644 "$srcdir/zbridge/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    fi
+}

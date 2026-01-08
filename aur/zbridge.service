@@ -1,0 +1,14 @@
+[Unit]
+Description=ZeroBridge Background Daemon
+After=pipewire.service network.target
+
+[Service]
+# Matches the Nix wrapper behavior (-d flag enables desktop notifications on failure)
+ExecStart=/usr/bin/zb-daemon -d
+Restart=always
+RestartSec=5
+# Arch usually sets a correct PATH, but if specific overrides are needed:
+# Environment="PATH=/usr/bin:/bin"
+
+[Install]
+WantedBy=default.target

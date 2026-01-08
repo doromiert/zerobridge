@@ -1,0 +1,16 @@
+post_install() {
+    echo ":: ZeroBridge Core installed."
+    echo ":: To start the daemon for your user:"
+    echo "   systemctl --user enable --now zbridge.service"
+    echo ""
+    echo ":: If this is a fresh install, pair your phone first:"
+    echo "   1. Connect via USB"
+    echo "   2. Run: zb-installer <PHONE_IP>"
+    echo "   3. Run: zb-config -i <PHONE_IP> -t"
+}
+
+post_upgrade() {
+    echo ":: Reloading systemd user daemon..."
+    systemctl --user daemon-reload
+    systemctl --user try-restart zbridge.service
+}
