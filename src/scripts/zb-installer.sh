@@ -2,6 +2,7 @@
 # ==============================================================================
 # ZBridge Installer (zb-installer.sh)
 # Role: Deploys Python Receiver to Phone (Reliability Optimized)
+# Updated: Session ID Syncing + Removed Hardcoded Volume
 # ==============================================================================
 
 PHONE_IP=$1
@@ -11,7 +12,7 @@ echo ":: Connecting to $PHONE_IP..."
 adb connect "$PHONE_IP"
 adb -s "$PHONE_IP" wait-for-device
 
-# --- 1. Generate Python Payload (Updated with FEC/PLC) ---
+# --- 1. Generate Python Payload (Updated with Session ID Logic) ---
 cat << 'EOF' > zb_receiver.py
 import socket
 import time
@@ -29,6 +30,7 @@ GST_PORT = 5000
 pc_ip = None
 running = True
 gst_process = None
+current_session_id = None
 
 def load_cached_ip():
     if os.path.exists(CACHE_FILE):
@@ -51,13 +53,13 @@ def start_gst():
     
     print(":: [Recv] Starting GStreamer (Reliable Mode)...")
     # OPTIMIZATION:
-    # 1. do-lost=true: Dropping late packets immediately to prevent drift/buffer freeze
-    # 2. use-inband-fec=true: Use redundant data from stream to fix gaps
-    # 3. plc=true: Generate fake audio for remaining gaps (Packet Loss Concealment)
+    # 1. do-lost=true: Dropping late packets immediately
+    # 2. mode=slave: Slave jitterbuffer to sender clock (Fixes drift/robotic audio)
+    # 3. No Volume Plugin: Gain is controlled purely by PC Sender volume (zbout)
     cmd = [
         "gst-launch-1.0", "-q", "udpsrc", f"port={GST_PORT}", "!",
         "application/x-rtp,media=audio,clock-rate=48000,encoding-name=OPUS,payload=96", "!",
-        "rtpjitterbuffer", "latency=100", "do-lost=true", "!",
+        "rtpjitterbuffer", "latency=100", "do-lost=true", "mode=slave", "!",
         "rtpopusdepay", "!", 
         "opusdec", "use-inband-fec=true", "plc=true", "!",
         "openslessink", "buffer-time=100000", "latency-time=20000"
@@ -67,7 +69,12 @@ def start_gst():
 def stop_gst():
     global gst_process
     if gst_process:
+        print(":: [Recv] Stopping GStreamer for Sync...")
         gst_process.terminate()
+        try:
+            gst_process.wait(timeout=1)
+        except:
+            gst_process.kill()
         gst_process = None
 
 # --- Main Loop ---
@@ -116,6 +123,16 @@ while running:
             sock.sendto(b"READY", (pc_ip, UDP_SEND))
             
         elif "ACK" in msg:
+            # Parse ACK:SessionID
+            parts = msg.split(':')
+            received_sid = parts[1] if len(parts) > 1 else "legacy"
+            
+            # If Session ID changed, RESTART GStreamer to resync clocks
+            if received_sid != "legacy" and received_sid != current_session_id:
+                print(f":: [Recv] New Session detected ({received_sid}). Resyncing...")
+                stop_gst()
+                current_session_id = received_sid
+            
             start_gst()
             
     except socket.timeout:
@@ -124,10 +141,7 @@ while running:
         print(f":: [Error] Loop error: {e}")
 
     # C. HEALTH CHECK / WATCHDOG
-    # If we know the PC IP but GStreamer died, restart it automatically.
     if pc_ip and (not gst_process or gst_process.poll() is not None):
-        # Only restart if we've received an ACK recently? 
-        # For now, simplistic restart is better than dead silence.
         pass 
 EOF
 
