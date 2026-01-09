@@ -2,7 +2,7 @@
 # ==============================================================================
 # ZBridge Daemon (Python Rewrite)
 # Role: Robust State Machine, Audio Graph Manager & Handshake Host
-# Updated: Fixed Mic Slider Logic (Strict Loopback Chaining)
+# Updated: Reverted Mic Bridge (Fixed Logic), Added Gain via Pactl/GStreamer
 # ==============================================================================
 
 import socket
@@ -39,6 +39,10 @@ current_scrcpy_cmd = []
 session_id = str(int(time.time())) 
 lock = threading.Lock()
 scrcpy_last_crash = 0
+
+# Gain State
+current_mic_gain = "1.0"
+current_audio_gain = "1.0"
 
 # Track loopback processes to prevent infinite spawning
 virtual_sinks = {} 
@@ -110,6 +114,21 @@ def run_command(cmd_list, bg=False):
         error(f"Command failed: {cmd_list} -> {e}")
         return None
 
+def set_pactl_volume(node_name, gain_str):
+    """
+    Safely sets volume using pactl if available.
+    Expects gain_str like "1.5" (150%).
+    """
+    try:
+        gain_float = float(gain_str)
+        pct = int(gain_float * 100)
+        # Use set-sink-volume because zbin_void is a Null Sink
+        subprocess.run(["pactl", "set-sink-volume", node_name, f"{pct}%"], 
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        # If pactl is missing or fails, we fail silently to preserve robustness
+        pass
+
 def send_notification(title, message):
     try:
         subprocess.Popen(["notify-send", "-a", "zerobridge", "-u", "critical", "-i", "phone", title, message])
@@ -117,7 +136,6 @@ def send_notification(title, message):
         error(f"Failed to send notification: {e}")
 
 def get_camera_icon_path():
-    """Searches for a standard XDG camera-disabled icon."""
     search_paths = [
         "/usr/share/icons/Adwaita/symbolic/status",
         "/usr/share/icons/Adwaita/scalable/status",
@@ -136,14 +154,10 @@ def get_camera_icon_path():
     return None
 
 def ensure_adb_connection(target_ip):
-    """Ensures ADB is connected to the target IP before launching Scrcpy."""
     try:
-        # Check current devices
         output = subprocess.check_output(["adb", "devices"], text=True)
         if target_ip in output:
             return True
-        
-        # Not found, try connecting
         log(f":: [Daemon] ADB not connected to {target_ip}. Connecting...")
         res = subprocess.run(["adb", "connect", target_ip], timeout=5, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if "connected to" in res.stdout:
@@ -157,21 +171,18 @@ def ensure_adb_connection(target_ip):
         return False
 
 def spawn_loopback_sink(node_name, description, target_node):
-    """Starts a pw-loopback process acting as a Volume-Controlled Sink."""
     global virtual_sinks
 
     client_name = f"zbridge_loopback_{node_name}"
 
-    # 1. Check Python Tracker
     if node_name in virtual_sinks:
         proc = virtual_sinks[node_name]
         if proc.poll() is None:
-            return # Healthy
+            return 
         else:
             log(f":: [Daemon] Virtual Sink {node_name} died unexpectedly. Respawning...")
             del virtual_sinks[node_name]
 
-    # 2. Check External (Cleanup/Orphan detection)
     if subprocess.run(["pgrep", "-f", f"pw-loopback.*--name {client_name}"], stdout=subprocess.DEVNULL).returncode == 0:
         subprocess.run(["pkill", "-f", f"pw-loopback.*--name {client_name}"])
         time.sleep(0.2)
@@ -204,7 +215,6 @@ def setup_audio_graph():
     # 1. Create Internal VOID nodes
     void_nodes = ["zbout_void", "zbin_void", "zmic"]
     void_descs = ["ZBridge_Out_Internal", "ZBridge_In_Internal", "ZeroBridge_Microphone"]
-    # zbout_void/zbin_void are Sinks. zmic is Source.
     void_types = ["Audio/Sink", "Audio/Sink", "Audio/Source/Virtual"]
     
     for i, node in enumerate(void_nodes):
@@ -225,22 +235,19 @@ def setup_audio_graph():
     spawn_loopback_sink("zbout", "ZeroBridge_To_Phone", "zbout_void")
     spawn_loopback_sink("zbin", "ZeroBridge_Phone_Mic", "zbin_void")
 
-    # 3. Enforce Routing
+    # 3. Enforce Routing (Reverted to Safe pw-link Logic)
     try:
-        # A. Link zbin_void -> zmic
-        # CRITICAL FIX: We must link the MONITOR of the intermediate void sink to the INPUT of the virtual mic
-        # zbin (Slider) -> [Loopback Process] -> zbin_void (Intermediate Sink) -> [Monitor] -> zmic (Virtual Mic)
+        # A. Link zbin_void -> zmic (Restored)
         run_command(["pw-link", "zbin_void:monitor_FL", "zmic:input_FL"])
         run_command(["pw-link", "zbin_void:monitor_FR", "zmic:input_FR"])
 
-        # B. Route Scrcpy/SDL to zbin (The User Slider)
+        # B. Route Scrcpy/SDL to zbin
         sources = ["SDL Application", "scrcpy"]
         for src in sources:
-            # Connect to zbin (Slider)
             run_command(["pw-link", f"{src}:output_FL", "zbin:playback_FL"])
             run_command(["pw-link", f"{src}:output_FR", "zbin:playback_FR"])
             
-            # Anti-Feedback: Disconnect from zbout (PC->Phone)
+            # Anti-Feedback
             run_command(["pw-link", "-d", f"{src}:output_FL", "zbout:playback_FL"])
             run_command(["pw-link", "-d", f"{src}:output_FR", "zbout:playback_FR"])
 
@@ -248,8 +255,7 @@ def setup_audio_graph():
         run_command(["pw-link", "-d", "output.ZBridge_Monitor:output_FL", "zbout:playback_FL"])
         run_command(["pw-link", "-d", "output.ZBridge_Monitor:output_FR", "zbout:playback_FR"])
         
-        # Ensure zmic doesn't feed back into desktop capture (if using obs etc)
-        # Note: zmic is a Source, so it has capture_FL/FR ports
+        # Anti-Feedback for Desktop Capture
         run_command(["pw-link", "-d", "zmic:capture_FL", "input.ZBridge_Desktop:input_FL"])
         run_command(["pw-link", "-d", "zmic:capture_FR", "input.ZBridge_Desktop:input_FR"])
     except:
@@ -290,7 +296,6 @@ def network_listener():
     sock.settimeout(1.0)
     
     log(f"Listening on UDP {UDP_PORT_LISTEN}...")
-    log(f"Current Session ID: {session_id}")
     
     while running:
         try:
@@ -313,7 +318,9 @@ def network_listener():
             time.sleep(1)
 
 def connection_manager():
-    global current_state, gst_process, scrcpy_process, placeholder_process, phone_ip, last_heartbeat, current_scrcpy_cmd, scrcpy_last_crash
+    global current_state, gst_process, scrcpy_process, placeholder_process, phone_ip, last_heartbeat 
+    global current_scrcpy_cmd, scrcpy_last_crash
+    global current_mic_gain, current_audio_gain
     
     start_time = time.time()
     startup_notified = False
@@ -330,6 +337,24 @@ def connection_manager():
         def_front = cfg.get("DEF_ORIENT_FRONT", "flip90")
         def_back = cfg.get("DEF_ORIENT_BACK", "flip270")
         
+        # Gain Updates
+        new_mic_gain = cfg.get("MIC_GAIN", "1.0")
+        new_audio_gain = cfg.get("AUDIO_GAIN", "1.0")
+        
+        # Apply Mic Gain via Pactl (Does not require graph restart)
+        if new_mic_gain != current_mic_gain:
+            log(f":: [Daemon] Mic Gain changing: {current_mic_gain} -> {new_mic_gain}")
+            current_mic_gain = new_mic_gain
+            set_pactl_volume("zbin_void", current_mic_gain)
+
+        # Apply Audio Gain (Requires Stream Restart)
+        if new_audio_gain != current_audio_gain:
+            log(f":: [Daemon] Audio Out Gain changing: {current_audio_gain} -> {new_audio_gain}")
+            current_audio_gain = new_audio_gain
+            if gst_process: 
+                gst_process.terminate()
+                gst_process = None
+
         if new_ip != phone_ip:
             log(f"Target IP Changed: {new_ip}")
             phone_ip = new_ip
@@ -339,7 +364,6 @@ def connection_manager():
             if placeholder_process: placeholder_process.terminate(); placeholder_process = None
             if os.path.exists(READY_FLAG): os.remove(READY_FLAG)
 
-        # Monitor: Listen to zmic (Final Mix) to ensure we hear volume changes
         manage_loopback("ZBridge_Monitor", monitor, "zmic", "0")
         manage_loopback("ZBridge_Desktop", desktop, "0", "zbout")
 
@@ -375,14 +399,14 @@ def connection_manager():
             # --- AUDIO STREAM (PC -> Phone) ---
             if desktop == "on":
                 if gst_process is None or gst_process.poll() is not None:
-                    # Capture from the Internal Void Monitor
-                    # This captures the audio AFTER the loopback applied volume
                     zbout_void_id = get_node_id("zbout_void")
                     if zbout_void_id:
-                        log(f"Starting Stream -> {target_ip_clean}:5000")
+                        log(f"Starting Stream -> {target_ip_clean}:5000 (Gain: {current_audio_gain})")
                         cmd = [
-                            "gst-launch-1.0", "-q", "pipewiresrc", f"path={zbout_void_id}", "do-timestamp=true", "!",
+                            "gst-launch-1.0", "-q", 
+                            "pipewiresrc", f"path={zbout_void_id}", "do-timestamp=true", "!",
                             "audioconvert", "!",
+                            "volume", f"volume={current_audio_gain}", "!",
                             "opusenc", "bitrate=96000", "audio-type=voice", "frame-size=10",
                             "inband-fec=true", "packet-loss-percentage=10", "!",
                             "rtpopuspay", "!",
@@ -425,7 +449,7 @@ def connection_manager():
             use_placeholder = (cam_facing == "none" and os.path.exists("/dev/video9"))
             if use_placeholder:
                 if not placeholder_process or placeholder_process.poll() is not None:
-                    log(":: [Daemon] Starting Placeholder Stream (Black Screen + Icon)...")
+                    log(":: [Daemon] Starting Placeholder Stream...")
                     icon_path = get_camera_icon_path()
                     gst_cmd = ["gst-launch-1.0", "videotestsrc", "pattern=black", "!", "video/x-raw,width=1920,height=1080,framerate=30/1"]
                     if icon_path:
@@ -436,7 +460,6 @@ def connection_manager():
                     placeholder_process = subprocess.Popen(gst_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 if placeholder_process:
-                    log(":: [Daemon] Stopping Placeholder...")
                     placeholder_process.terminate()
                     try: placeholder_process.wait(timeout=1)
                     except: placeholder_process.kill()
@@ -454,10 +477,13 @@ def connection_manager():
                 else:
                     if ensure_adb_connection(phone_ip):
                         log(f"Starting Scrcpy ({cam_facing})...")
-                        log(f"CMD: {' '.join(target_cmd)}")
                         env = os.environ.copy()
                         scrcpy_process = subprocess.Popen(target_cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
                         current_scrcpy_cmd = target_cmd
+            
+            # Initial Gain Set for fresh loops
+            if current_state == "CONNECTED" and time.time() % 5 < 0.6:
+                set_pactl_volume("zbin_void", current_mic_gain)
 
         time.sleep(0.5)
 

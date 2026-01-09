@@ -22,40 +22,29 @@ trap 'CONFIRMED=true' SIGUSR2
 
 is_valid_ip() {
     local input=$1
-    # Split input into IP and Port
     local ip="${input%%:*}"
     local port="${input#*:}"
     
-    # If input == port, it means there was no colon (no port specified)
-    if [[ "$input" == "$port" ]]; then
-        port=""
-    fi
+    if [[ "$input" == "$port" ]]; then port=""; fi
 
     local stat=1
-
-    # 1. Validate the IP part
     if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        OIFS=$IFS
-        IFS='.'
-        local octets=($ip)
-        IFS=$OIFS
-        
-        # Check if all octets are <= 255
+        OIFS=$IFS; IFS='.'; local octets=($ip); IFS=$OIFS
         if [[ ${octets[0]} -le 255 && ${octets[1]} -le 255 && \
               ${octets[2]} -le 255 && ${octets[3]} -le 255 ]]; then
             stat=0
         fi
     fi
-
-    # 2. Validate the Port (if present)
     if [[ $stat -eq 0 && -n "$port" ]]; then
-        # Must be numeric and within range 1-65535
         if [[ ! "$port" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
             stat=1
         fi
     fi
-
     return $stat
+}
+
+is_valid_number() {
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]
 }
 
 get_config() {
@@ -142,7 +131,6 @@ add_saved() {
 remove_saved() {
     local ip="$1"
     if [[ -f "$IPS_FILE" ]]; then
-        # Use a temporary file to grep -v
         grep -Fxv "$ip" "$IPS_FILE" > "$IPS_FILE.tmp" && mv "$IPS_FILE.tmp" "$IPS_FILE"
         echo "Removed $ip"
     fi
@@ -177,6 +165,11 @@ show_status() {
     echo -n "   Desktop: [${dsk_conf:-off}] "
     [[ -n "$dsk_act" && "$dsk_act" != "null" ]] && echo -e "\033[32m[ACTIVE]\033[0m" || echo -e "\033[31m[INACTIVE]\033[0m"
 
+    local mic_gain=$(get_config MIC_GAIN)
+    local aud_gain=$(get_config AUDIO_GAIN)
+    echo "   Mic Gain: ${mic_gain:-1.0}"
+    echo "   Audio Out Gain: ${aud_gain:-1.0}"
+
     local active=$(systemctl --user is-active "$SERVICE_NAME")
     echo "   Daemon: $active"
 }
@@ -185,13 +178,27 @@ show_status() {
 
 if [[ $# -eq 0 ]]; then show_status; exit 0; fi
 
-while getopts "i:c:m:d:o:F:B:A:R:Ltk" opt; do
+while getopts "i:c:m:d:o:g:G:F:B:A:R:Ltk" opt; do
     case $opt in
         i) 
             if is_valid_ip "$OPTARG"; then
                 set_config "PHONE_IP" "$OPTARG"; send_signal_and_wait
             else
                 echo "[!] Error: Invalid IP."; exit 1
+            fi
+            ;;
+        g)
+            if is_valid_number "$OPTARG"; then
+                set_config "MIC_GAIN" "$OPTARG"; send_signal_and_wait
+            else
+                echo "[!] Error: Gain must be a number (e.g., 1.0, 0.5, 2.5)."
+            fi
+            ;;
+        G)
+            if is_valid_number "$OPTARG"; then
+                set_config "AUDIO_GAIN" "$OPTARG"; send_signal_and_wait
+            else
+                echo "[!] Error: Gain must be a number (e.g., 1.0, 0.5, 2.5)."
             fi
             ;;
         A) add_saved "$OPTARG" ;;
