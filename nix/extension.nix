@@ -7,7 +7,7 @@
   jq,
 }:
 
-stdenv.mkDerivation rec {
+stdenv.mkDerivation {
   pname = "zbridge-extension";
   version = "2"; # Updated to match new metadata
 
