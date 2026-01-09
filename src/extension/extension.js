@@ -54,6 +54,9 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
         this._indicator = indicator;
         this._isSyncing = false;
         
+        // Load Settings for the Saved IP list
+        this._settings = extensionObject.getSettings();
+
         this._buildMenu();
         this._syncState(); 
         this.connect('clicked', () => this._onMainToggle());
@@ -67,6 +70,13 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
 
         // --- 2. Advanced Section (Hidden when OFF) ---
         this._advancedItems = [];
+
+        // === Saved Phones Switcher ===
+        // We create the menu, but we populate it dynamically in _syncState or on open
+        this._phoneMenu = new PopupMenu.PopupSubMenuMenuItem(_('Switch Phone'), true);
+        this._phoneMenu.icon.icon_name = 'phone-symbolic';
+        this.menu.addMenuItem(this._phoneMenu);
+        this._advancedItems.push(this._phoneMenu);
 
         // === Camera Source Submenu ===
         this._sourceMenu = new PopupMenu.PopupSubMenuMenuItem(_('Camera Source'), true);
@@ -91,11 +101,9 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
         this._orientMenu.icon.icon_name = 'object-rotate-right-symbolic';
         this._orientItems = {};
         
-        // State tracking for the split logic
         this._currentAngle = '0'; 
         this._isFlipped = false;
 
-        // Angle Radio Buttons
         ['0', '90', '180', '270'].forEach(angle => {
              let item = new PopupMenu.PopupMenuItem(angle + '°');
              item.connect('activate', () => this._onOrientChange(angle, this._isFlipped));
@@ -105,7 +113,6 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
 
         this._orientMenu.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Flip Switch
         this._flipSwitch = new PopupMenu.PopupSwitchMenuItem(_('Mirror / Flip'), false);
         this._flipSwitch.connect('toggled', (item) => this._onOrientChange(this._currentAngle, item.state));
         this._orientMenu.menu.addMenuItem(this._flipSwitch);
@@ -150,8 +157,35 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
         this.menu.addMenuItem(settingsItem);
 
         this.menu.connect('open-state-changed', (menu, open) => {
-            if (open) this._syncState();
+            if (open) {
+                this._updatePhoneList();
+                this._syncState();
+            }
         });
+    }
+
+    _updatePhoneList() {
+        // Clear existing items in phone menu
+        this._phoneMenu.menu.removeAll();
+
+        const savedIps = this._settings.get_value('saved-ips').deep_unpack();
+        
+        if (savedIps.length === 0) {
+            let item = new PopupMenu.PopupMenuItem(_('No saved phones'), { reactive: false });
+            this._phoneMenu.menu.addMenuItem(item);
+        } else {
+            savedIps.forEach(ip => {
+                let item = new PopupMenu.PopupMenuItem(ip);
+                // Check if this is the current IP (Visual feedback)
+                if (this._currentIp === ip) {
+                    item.setOrnament(PopupMenu.Ornament.DOT);
+                }
+                item.connect('activate', () => {
+                    this._runConfig(['-i', ip]);
+                });
+                this._phoneMenu.menu.addMenuItem(item);
+            });
+        }
     }
 
     async _onMainToggle() {
@@ -161,16 +195,10 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
 
     async _onOrientChange(angle, flipped) {
         if (this._isSyncing) return;
-        
-        // Update local state immediately for responsiveness
         this._currentAngle = angle;
         this._isFlipped = flipped;
-
-        // Construct command
-        // logic: if flipped, prepend 'flip'. e.g. 90 -> flip90, 0 -> flip0
         let cmd = angle;
         if (flipped) cmd = 'flip' + angle;
-
         await this._runConfig(['-o', cmd]);
     }
 
@@ -197,48 +225,41 @@ class ZBridgeToggle extends QuickSettings.QuickMenuToggle {
         };
 
         const ip = getVal('IP');
+        this._currentIp = ip; // Store for phone menu check
         const cam = getVal('Cam'); 
         const monitor = getVal('Monitor'); 
         const desktop = getVal('Desktop');
         const status = getVal('Daemon');
         const isRunning = (status === 'active');
 
-        // Main Toggle Logic
         this.set({ checked: isRunning, subtitle: isRunning ? (ip || _('Streaming')) : _('Ready') });
         if (this._indicator) this._indicator.visible = isRunning;
 
-        // Visibility Logic
         this._turnOnItem.visible = !isRunning;
         this._advancedItems.forEach(item => { item.visible = isRunning; });
         this._orientMenu.visible = (cam !== 'none');
 
         if (isRunning) {
-            // Source Radio Sync
+            // Update phone menu ornament
+            this._updatePhoneList();
+
             ['back', 'front', 'none'].forEach(k => {
                  this._sourceItems[k].setOrnament(cam === k ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
             });
 
-            // Orientation Sync
-            // Parse "flip90 (Default)" -> "flip90"
             let orientRaw = getVal('Camera orientation').split(' ')[0];
-            
-            // Derive split state
             let isFlipped = orientRaw.startsWith('flip');
             let angle = orientRaw.replace('flip', '');
-            
-            // Safety check for unknown angles
             if (!['0','90','180','270'].includes(angle)) angle = '0';
 
             this._currentAngle = angle;
             this._isFlipped = isFlipped;
 
-            // Update UI
             Object.keys(this._orientItems).forEach(k => {
                 this._orientItems[k].setOrnament(k === angle ? PopupMenu.Ornament.DOT : PopupMenu.Ornament.NONE);
             });
             this._flipSwitch.setToggleState(isFlipped);
 
-            // Audio Sync
             this._monitorSwitch.setToggleState(monitor.includes('[ACTIVE]') || monitor.includes('[on]'));
             this._desktopSwitch.setToggleState(desktop.includes('[ACTIVE]') || desktop.includes('[on]'));
         }

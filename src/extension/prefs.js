@@ -1,43 +1,61 @@
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
+import GObject from 'gi://GObject';
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 export default class ZBridgePrefs extends ExtensionPreferences {
     fillPreferencesWindow(window) {
+        this._settings = this.getSettings();
         const page = new Adw.PreferencesPage();
 
-        // --- Group 1: Connection ---
+        // --- Group 1: Manage Connection ---
         const groupConnect = new Adw.PreferencesGroup({
-            title: _('Connection Settings'),
-            description: _('Configure the target IP of your Android device.')
+            title: _('Connection Management'),
+            description: _('Connect to a new device or manage saved phones.')
         });
 
-        // NATIVE ADWAITA: Use Adw.EntryRow instead of ActionRow + Entry
+        // 1. New Connection Row
         const ipRow = new Adw.EntryRow({
-            title: _('Phone IP Address'),
+            title: _('New Connection (IP)'),
             input_purpose: Gtk.InputPurpose.FREE_FORM
         });
 
-        const saveBtn = new Gtk.Button({
-            label: _('Save & Connect'),
+        const connectBtn = new Gtk.Button({
+            label: _('Connect & Save'),
             valign: Gtk.Align.CENTER
         });
-        saveBtn.add_css_class('suggested-action'); // Blue accent color
+        connectBtn.add_css_class('suggested-action');
 
-        saveBtn.connect('clicked', () => {
+        connectBtn.connect('clicked', () => {
             const ip = ipRow.get_text();
             if (ip) {
-                this._runCommand(
-                    ['zb-config', '-i', ip],
-                    saveBtn,
-                    _('Save & Connect')
-                );
+                // Run connection command
+                this._runCommand(['zb-config', '-i', ip], connectBtn, _('Connect & Save'), true, ip);
             }
         });
 
-        ipRow.add_suffix(saveBtn);
+        ipRow.add_suffix(connectBtn);
         groupConnect.add(ipRow);
+
+        // 2. Saved List Expander
+        this._savedGroup = new Adw.ExpanderRow({
+            title: _('Saved Phones'),
+            subtitle: _('Click to quick-connect'),
+            expanded: true
+        });
+
+        // Icon for the expander
+        this._savedGroup.add_prefix(new Gtk.Image({ icon_name: 'phone-symbolic' }));
+        
+        groupConnect.add(this._savedGroup);
+
+        // Initialize the list
+        this._refreshSavedList();
+
+        // Listen for external changes (optional, but good practice)
+        this._settings.connect('changed::saved-ips', () => this._refreshSavedList());
+
 
         // --- Group 2: Camera Defaults ---
         const groupCam = new Adw.PreferencesGroup({
@@ -48,28 +66,24 @@ export default class ZBridgePrefs extends ExtensionPreferences {
         const orientations = ['0', '90', '180', '270', 'flip0', 'flip90', 'flip180', 'flip270'];
         const orientList = new Gtk.StringList({ strings: orientations });
 
-        // Front Camera Default
+        // Front
         const frontRow = new Adw.ComboRow({
             title: _('Default Front Orientation'),
             model: orientList,
         });
-        // Default index 5 corresponds to 'flip90'
-        frontRow.set_selected(5); 
-
+        frontRow.set_selected(5); // flip90
         frontRow.connect('notify::selected', () => {
              const selected = orientations[frontRow.get_selected()];
              this._runSilentCommand(['zb-config', '-F', selected]);
         });
         groupCam.add(frontRow);
 
-        // Back Camera Default
+        // Back
         const backRow = new Adw.ComboRow({
             title: _('Default Back Orientation'),
             model: orientList,
         });
-        // Default index 7 corresponds to 'flip270'
-        backRow.set_selected(7);
-
+        backRow.set_selected(7); // flip270
         backRow.connect('notify::selected', () => {
              const selected = orientations[backRow.get_selected()];
              this._runSilentCommand(['zb-config', '-B', selected]);
@@ -83,14 +97,11 @@ export default class ZBridgePrefs extends ExtensionPreferences {
             description: _('Requires "Wireless Debugging" enabled in Android Developer Options.')
         });
 
-        // Pairing Address
         const pairIpRow = new Adw.EntryRow({
             title: _('Pairing Address'),
-            text: '', 
             input_purpose: Gtk.InputPurpose.FREE_FORM
         });
 
-        // Pairing Code
         const codeRow = new Adw.EntryRow({
             title: _('Pairing Code'),
             input_purpose: Gtk.InputPurpose.NUMBER
@@ -105,13 +116,10 @@ export default class ZBridgePrefs extends ExtensionPreferences {
         pairBtn.connect('clicked', () => {
             const addr = pairIpRow.get_text();
             const code = codeRow.get_text();
-            if (addr && code) {
-                this._runPair(addr, code, pairBtn);
-            }
+            if (addr && code) this._runPair(addr, code, pairBtn);
         });
 
         codeRow.add_suffix(pairBtn);
-
         groupPair.add(pairIpRow);
         groupPair.add(codeRow);
 
@@ -121,11 +129,85 @@ export default class ZBridgePrefs extends ExtensionPreferences {
         window.add(page);
     }
 
-    /**
-     * Generic helper to run a subprocess and update button state
-     */
-    _runCommand(argv, button, defaultLabel) {
+    _refreshSavedList() {
+        // Clear current rows in the expander
+        // Note: Adw.ExpanderRow doesn't have a clear(), so we remove rows one by one
+        // Wait, currently Adw 1.4+ (Shell 45+)
+        
+        // Safety check: The easiest way to "refresh" without complexity is 
+        // managing the rows manually.
+        
+        // Since we can't easily iterate and remove children from ExpanderRow in JS 
+        // without getting Gtk internal children sometimes, we keep track of them.
+        if (this._currentRows) {
+            this._currentRows.forEach(row => this._savedGroup.remove(row));
+        }
+        this._currentRows = [];
+
+        const savedIps = this._settings.get_value('saved-ips').deep_unpack();
+
+        savedIps.forEach(ip => {
+            const row = new Adw.ActionRow({ title: ip });
+            
+            // Connect Button (Icon)
+            const connBtn = new Gtk.Button({
+                icon_name: 'network-transmit-receive-symbolic',
+                valign: Gtk.Align.CENTER,
+                tooltip_text: _('Connect to this phone')
+            });
+            connBtn.add_css_class('flat');
+            connBtn.connect('clicked', () => {
+                this._runCommand(['zb-config', '-i', ip], connBtn, null, false, null);
+            });
+            row.add_suffix(connBtn);
+
+            // Delete Button
+            const delBtn = new Gtk.Button({
+                icon_name: 'user-trash-symbolic',
+                valign: Gtk.Align.CENTER,
+                tooltip_text: _('Remove from list')
+            });
+            delBtn.add_css_class('flat');
+            delBtn.add_css_class('destructive-action');
+            
+            delBtn.connect('clicked', () => {
+                this._removeIp(ip);
+            });
+            row.add_suffix(delBtn);
+
+            this._savedGroup.add_row(row);
+            this._currentRows.push(row);
+        });
+
+        if (savedIps.length === 0) {
+            this._savedGroup.set_subtitle(_('No phones saved yet'));
+        } else {
+            this._savedGroup.set_subtitle(_(`${savedIps.length} phone(s) saved`));
+        }
+    }
+
+    _saveIp(ip) {
+        let current = this._settings.get_value('saved-ips').deep_unpack();
+        if (!current.includes(ip)) {
+            current.push(ip);
+            this._settings.set_value('saved-ips', new GObject.Variant('as', current));
+            this._refreshSavedList();
+        }
+    }
+
+    _removeIp(ip) {
+        let current = this._settings.get_value('saved-ips').deep_unpack();
+        const index = current.indexOf(ip);
+        if (index > -1) {
+            current.splice(index, 1);
+            this._settings.set_value('saved-ips', new GObject.Variant('as', current));
+            this._refreshSavedList();
+        }
+    }
+
+    _runCommand(argv, button, defaultLabel, saveOnSuccess, ipToSave) {
         button.set_sensitive(false);
+        const originalLabel = button.label; // Keep icon if label is null
         
         try {
             const proc = new Gio.Subprocess({
@@ -137,20 +219,25 @@ export default class ZBridgePrefs extends ExtensionPreferences {
             proc.wait_check_async(null, (proc, res) => {
                 try {
                     proc.wait_check_finish(res);
-                    button.set_label(_('Success!'));
+                    // On Success
+                    if (!button.icon_name) button.set_label(_('Success!'));
+                    
+                    if (saveOnSuccess && ipToSave) {
+                        this._saveIp(ipToSave);
+                    }
+
                 } catch (e) {
                     console.error(e);
-                    button.set_label(_('Failed'));
+                    if (!button.icon_name) button.set_label(_('Failed'));
                 }
                 
                 setTimeout(() => {
-                    button.set_label(defaultLabel);
+                    if (defaultLabel) button.set_label(defaultLabel);
                     button.set_sensitive(true);
-                }, 2000);
+                }, 1500);
             });
         } catch (e) {
             console.error(e);
-            button.set_label(_('Error'));
             button.set_sensitive(true);
         }
     }
@@ -163,6 +250,7 @@ export default class ZBridgePrefs extends ExtensionPreferences {
     }
 
     _runPair(addr, code, btn) {
+        // ... (Same as original) ...
         btn.set_sensitive(false);
         btn.set_label(_('Pairing...'));
 
@@ -178,23 +266,12 @@ export default class ZBridgePrefs extends ExtensionPreferences {
                     const [, stdout, stderr] = proc.communicate_utf8_finish(res);
                     if (proc.get_successful()) {
                         btn.set_label(_('Paired!'));
-                        
-                        // Optional: Send system notification
-                        try {
-                            const notif = new Gio.Subprocess({
-                                argv: ['notify-send', 'ZBridge', `Successfully paired: ${addr}`],
-                                flags: Gio.SubprocessFlags.NONE
-                            });
-                            notif.init(null);
-                        } catch(e) {}
-
+                        this._saveIp(addr.split(':')[0]); // Auto-save paired IP? optional
                     } else {
                         btn.set_label(_('Failed'));
-                        console.warn(stderr);
                     }
                 } catch (e) {
                     btn.set_label(_('Error'));
-                    console.error(e);
                 }
 
                 setTimeout(() => {

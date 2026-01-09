@@ -9,7 +9,7 @@
 
 stdenv.mkDerivation rec {
   pname = "zbridge-extension";
-  version = "1.0.0";
+  version = "2"; # Updated to match new metadata
 
   src = ../src/extension;
 
@@ -28,9 +28,14 @@ stdenv.mkDerivation rec {
       exit 1
     fi
 
-    # Compile schemas if they exist (future proofing)
+    # Strict Schema Compilation
+    # We now strictly require the schemas directory to exist.
     if [ -d schemas ]; then
+      echo "Compiling GSettings schemas..."
       glib-compile-schemas schemas/
+    else
+      echo "ERROR: 'schemas/' directory not found. Build failed."
+      exit 1
     fi
   '';
 
@@ -39,6 +44,8 @@ stdenv.mkDerivation rec {
     installDir="$out/share/gnome-shell/extensions/$uuid"
 
     mkdir -p "$installDir"
+
+    # This copies everything, including the 'schemas/gschemas.compiled' file generated above
     cp -r * "$installDir"
   '';
 
