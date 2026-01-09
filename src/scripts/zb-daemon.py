@@ -112,7 +112,7 @@ def run_command(cmd_list, bg=False):
 
 def send_notification(title, message):
     try:
-        subprocess.Popen(["notify-send", "-u", "critical", title, message])
+        subprocess.Popen(["notify-send", "-a", "zerobridge", "-u", "critical", "-i", "phone", title, message])
     except Exception as e:
         error(f"Failed to send notification: {e}")
 
