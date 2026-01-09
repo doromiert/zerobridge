@@ -28,15 +28,6 @@ stdenv.mkDerivation rec {
       exit 1
     fi
 
-    # Strict Schema Compilation
-    # We now strictly require the schemas directory to exist.
-    if [ -d schemas ]; then
-      echo "Compiling GSettings schemas..."
-      glib-compile-schemas schemas/
-    else
-      echo "ERROR: 'schemas/' directory not found. Build failed."
-      exit 1
-    fi
   '';
 
   installPhase = ''
