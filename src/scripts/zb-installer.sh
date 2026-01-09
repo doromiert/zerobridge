@@ -195,3 +195,7 @@ adb -s "$PHONE_IP" shell am start -n com.termux/.app.TermuxActivity
 
 echo ":: DONE. Re-run zb-config to connect."
 rm zb_receiver.py zreceiver_setup.sh
+
+
+echo ":: IMPORTANT! if you see a \"java.lang.SecurityException: Injecting input events requires the caller \(or the source of the instrumentation, if any\) to have the INJECT_EVENTS permission.\" it means that it hasn't installed itself. You have to go to Settings > Additional Settings > Developer Options and enable \"USB Debugging (Security Settings)\" (it might be named something else on your device so look for something akin to that) and toggle it on."
+echo ":: IMPORTANT! if the installer didn't recognize the phone, you probably need to enable wireless debugging."
