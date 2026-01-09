@@ -358,7 +358,7 @@ def connection_manager():
 
         if current_state == "DISCONNECTED":
             if args.debug_notify and not startup_notified and (time.time() - start_time > 5.0):
-                send_notification("ZeroBridge", "No response from phone.")
+                send_notification("ZeroBridge", "No response from phone. Run sv restart zreceiver in termux.")
                 startup_notified = True
             
             my_ip = get_local_ip_for_target(target_ip_clean)
