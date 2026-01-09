@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # ZBridge Controller (zb-config.sh)
-# Role: Client / State Writer with Blocking Confirmation
+# Role: Client / State Writer / List Manager
 # ==============================================================================
 
 CONFIG_DIR="$HOME/.config/zbridge"
 CONFIG_FILE="$CONFIG_DIR/state.conf"
+IPS_FILE="$CONFIG_DIR/saved_ips"
 CONFIG_PID_FILE="/tmp/zbridge_config_pid"
 SERVICE_NAME="zbridge"
 
 mkdir -p "$CONFIG_DIR"
 [[ ! -f "$CONFIG_FILE" ]] && touch "$CONFIG_FILE"
+[[ ! -f "$IPS_FILE" ]] && touch "$IPS_FILE"
 
 # --- Confirmation Mechanism ---
 CONFIRMED=false
@@ -19,17 +21,40 @@ trap 'CONFIRMED=true' SIGUSR2
 # --- Helpers ---
 
 is_valid_ip() {
-    local ip=$1
+    local input=$1
+    # Split input into IP and Port
+    local ip="${input%%:*}"
+    local port="${input#*:}"
+    
+    # If input == port, it means there was no colon (no port specified)
+    if [[ "$input" == "$port" ]]; then
+        port=""
+    fi
+
     local stat=1
+
+    # 1. Validate the IP part
     if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
         OIFS=$IFS
         IFS='.'
-        ip=($ip)
+        local octets=($ip)
         IFS=$OIFS
-        [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 && \
-           ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
-        stat=$?
+        
+        # Check if all octets are <= 255
+        if [[ ${octets[0]} -le 255 && ${octets[1]} -le 255 && \
+              ${octets[2]} -le 255 && ${octets[3]} -le 255 ]]; then
+            stat=0
+        fi
     fi
+
+    # 2. Validate the Port (if present)
+    if [[ $stat -eq 0 && -n "$port" ]]; then
+        # Must be numeric and within range 1-65535
+        if [[ ! "$port" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
+            stat=1
+        fi
+    fi
+
     return $stat
 }
 
@@ -94,6 +119,35 @@ toggle_setting() {
     fi
 }
 
+# --- List Management ---
+
+list_saved() {
+    [[ -f "$IPS_FILE" ]] && cat "$IPS_FILE"
+}
+
+add_saved() {
+    local ip="$1"
+    if ! is_valid_ip "$ip"; then
+        echo "ERROR: Invalid IP format"
+        exit 1
+    fi
+    if ! grep -Fxq "$ip" "$IPS_FILE"; then
+        echo "$ip" >> "$IPS_FILE"
+        echo "Saved $ip"
+    else
+        echo "IP already saved"
+    fi
+}
+
+remove_saved() {
+    local ip="$1"
+    if [[ -f "$IPS_FILE" ]]; then
+        # Use a temporary file to grep -v
+        grep -Fxv "$ip" "$IPS_FILE" > "$IPS_FILE.tmp" && mv "$IPS_FILE.tmp" "$IPS_FILE"
+        echo "Removed $ip"
+    fi
+}
+
 show_status() {
     echo ":: ZeroBridge State ::"
     echo "   IP: $(get_config PHONE_IP)"
@@ -103,22 +157,13 @@ show_status() {
     
     if ! grep -qi "CAM_FACING=\"none\"" "$CONFIG_FILE"; then
         local orient=$(get_config CAM_ORIENT)
-        
-        # Resolve default for display if empty
         if [[ -z "$orient" ]]; then
             local df=$(get_config DEF_ORIENT_FRONT)
             local db=$(get_config DEF_ORIENT_BACK)
-            # Fallback to hardcoded if not set
             [[ -z "$df" ]] && df="flip90"
             [[ -z "$db" ]] && db="flip270"
-
-            if [[ "$cam" == "front" ]]; then
-                orient="$df (Default)"
-            else
-                orient="$db (Default)"
-            fi
+            if [[ "$cam" == "front" ]]; then orient="$df (Default)"; else orient="$db (Default)"; fi
         fi
-        
         echo "   Camera orientation: $orient"
     fi
     
@@ -140,7 +185,7 @@ show_status() {
 
 if [[ $# -eq 0 ]]; then show_status; exit 0; fi
 
-while getopts "i:c:m:d:o:F:B:tkh" opt; do
+while getopts "i:c:m:d:o:F:B:A:R:Ltk" opt; do
     case $opt in
         i) 
             if is_valid_ip "$OPTARG"; then
@@ -149,9 +194,11 @@ while getopts "i:c:m:d:o:F:B:tkh" opt; do
                 echo "[!] Error: Invalid IP."; exit 1
             fi
             ;;
+        A) add_saved "$OPTARG" ;;
+        R) remove_saved "$OPTARG" ;;
+        L) list_saved ;;
         c) 
             set_config "CAM_FACING" "$OPTARG"
-            # Clear manual orientation so new default applies
             set_config "CAM_ORIENT" ""
             send_signal_and_wait 
             ;;
@@ -159,7 +206,6 @@ while getopts "i:c:m:d:o:F:B:tkh" opt; do
             if grep -qi "CAM_FACING=\"none\"" "$CONFIG_FILE"; then
                 echo "[!] Camera is disabled."
             else
-                # UPDATE: Added flip0 to regex to support universal flip switch
                 if [[ "$OPTARG" =~ ^(0|flip0|90|flip90|180|flip180|270|flip270)$ ]]; then 
                     set_config "CAM_ORIENT" "$OPTARG"; send_signal_and_wait
                 else 
@@ -167,22 +213,16 @@ while getopts "i:c:m:d:o:F:B:tkh" opt; do
                 fi
             fi
         ;;
-        F) # Set Default Front Orientation
+        F) 
             if [[ "$OPTARG" =~ ^(0|flip0|90|flip90|180|flip180|270|flip270)$ ]]; then 
                 set_config "DEF_ORIENT_FRONT" "$OPTARG"
-                echo "[*] Default Front Orientation set to $OPTARG"
                 send_signal_and_wait
-            else
-                 echo "[!] Invalid orientation."
             fi
             ;;
-        B) # Set Default Back Orientation
+        B) 
             if [[ "$OPTARG" =~ ^(0|flip0|90|flip90|180|flip180|270|flip270)$ ]]; then 
                 set_config "DEF_ORIENT_BACK" "$OPTARG"
-                echo "[*] Default Back Orientation set to $OPTARG"
                 send_signal_and_wait
-            else
-                 echo "[!] Invalid orientation."
             fi
             ;;
         m) toggle_setting "MONITOR" "$OPTARG" ;;
@@ -199,6 +239,6 @@ while getopts "i:c:m:d:o:F:B:tkh" opt; do
             pkill -f "scrcpy"
             pkill -f "pw-loopback.*ZBridge"
             ;;
-        h) echo "Usage: zb-config [-i IP] [-c facing] [-o orient] [-F def_front] [-B def_back] [-m/-d on/off] [-t] [-k]" ;;
+        \?) echo "Invalid option"; exit 1 ;;
     esac
 done
