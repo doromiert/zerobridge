@@ -250,6 +250,10 @@ def setup_audio_graph():
             # Anti-Feedback
             run_command(["pw-link", "-d", f"{src}:output_FL", "zbout:playback_FL"])
             run_command(["pw-link", "-d", f"{src}:output_FR", "zbout:playback_FR"])
+            run_command(["pw-link", "-d", f"{src}:output_FL", "zbout_void:playback_FL"])
+            run_command(["pw-link", "-d", f"{src}:output_FR", "zbout_void:playback_FR"])
+            run_command(["pw-link", "-d", f"{src}:output_FL", "ALVR Audio:playback_FL"])
+            run_command(["pw-link", "-d", f"{src}:output_FR", "ALVR Audio:playback_FR"])
 
         # C. Loopback Cleanups
         run_command(["pw-link", "-d", "output.ZBridge_Monitor:output_FL", "zbout:playback_FL"])
@@ -372,13 +376,13 @@ def connection_manager():
             time.sleep(1)
             continue
 
-        if current_state == "CONNECTED" and (time.time() - last_heartbeat > 10):
-            log("Heartbeat timed out.")
-            current_state = "DISCONNECTED"
-            if os.path.exists(READY_FLAG): os.remove(READY_FLAG)
-            if gst_process: gst_process.terminate(); gst_process = None
-            if scrcpy_process: scrcpy_process.terminate(); scrcpy_process = None
-            if placeholder_process: placeholder_process.terminate(); placeholder_process = None
+        # if current_state == "CONNECTED" and (time.time() - last_heartbeat > 10):
+        #     log("Heartbeat timed out.")
+        #     current_state = "DISCONNECTED"
+        #     if os.path.exists(READY_FLAG): os.remove(READY_FLAG)
+        #     if gst_process: gst_process.terminate(); gst_process = None
+        #     if scrcpy_process: scrcpy_process.terminate(); scrcpy_process = None
+        #     if placeholder_process: placeholder_process.terminate(); placeholder_process = None
 
         if current_state == "DISCONNECTED":
             if args.debug_notify and not startup_notified and (time.time() - start_time > 5.0):
@@ -478,6 +482,9 @@ def connection_manager():
                     if ensure_adb_connection(phone_ip):
                         log(f"Starting Scrcpy ({cam_facing})...")
                         env = os.environ.copy()
+                        # scrcpy carries the phone microphone. Keep Pulse/PipeWire
+                        # from following ALVR when it temporarily becomes default.
+                        env["PULSE_SINK"] = "zbin_void"
                         scrcpy_process = subprocess.Popen(target_cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
                         current_scrcpy_cmd = target_cmd
             
